@@ -11,14 +11,13 @@ function verifyWebhookSignature(rawBody: string, signatureHeader: string | null)
   const received = signatureHeader.replace(/^sha256=/i, "").trim().toLowerCase();
   const expected = createHmac("sha256", secret).update(rawBody).digest("hex");
   if (!/^[a-f0-9]{64}$/.test(received)) return false;
-
   return timingSafeEqual(Buffer.from(received, "hex"), Buffer.from(expected, "hex"));
 }
 
 function toRupiah(value: unknown) {
-  const number = Number(value);
-  if (!Number.isFinite(number) || number < 0) return null;
-  return Math.round(number);
+  const amount = Number(value);
+  if (!Number.isFinite(amount) || amount < 0) return null;
+  return Math.round(amount);
 }
 
 export async function POST(req: Request) {
@@ -29,7 +28,7 @@ export async function POST(req: Request) {
     }
 
     // Generic HMAC adapter until the company chooses the payment gateway.
-    // Replace this verifier with the provider's documented signature algorithm when selected.
+    // Replace this with the provider's documented signature algorithm when selected.
     if (!verifyWebhookSignature(rawBody, req.headers.get("x-webhook-signature"))) {
       return NextResponse.json({ error: "Invalid webhook signature" }, { status: 401 });
     }
@@ -45,9 +44,7 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Invalid parameters" }, { status: 400 });
     }
 
-    const existingTransaction = await prisma.paymentTransaction.findUnique({
-      where: { transactionId },
-    });
+    const existingTransaction = await prisma.paymentTransaction.findUnique({ where: { transactionId } });
     if (existingTransaction) {
       return NextResponse.json({ success: true, message: "Transaction already processed" });
     }
@@ -56,9 +53,7 @@ export async function POST(req: Request) {
       where: { id: invoiceId },
       include: { subscriber: { include: { device: true } } },
     });
-    if (!invoice) {
-      return NextResponse.json({ error: "Invoice not found" }, { status: 404 });
-    }
+    if (!invoice) return NextResponse.json({ error: "Invoice not found" }, { status: 404 });
 
     const settled = transactionStatus === "settlement" || transactionStatus === "capture";
     const denied = ["deny", "expire", "cancel"].includes(transactionStatus);
@@ -66,8 +61,8 @@ export async function POST(req: Request) {
     let invoiceStatus = invoice.status;
     let paidAt: Date | null = invoice.paidAt;
 
-    // Partial payment, overpayment, and true double-payment policies are still unanswered.
-    // Fail safe: exact amount only can auto-settle. Anything else requires Finance review.
+    // Company has not finalized partial/over/double-payment policy.
+    // Exact amount only can auto-settle; ambiguous money movement goes to Finance review.
     if (settled) {
       if (invoice.status === "PAID" || amountPaid !== invoice.totalAmount) {
         paymentStatus = "REVIEW";
@@ -79,25 +74,17 @@ export async function POST(req: Request) {
     }
 
     const systemUser = await prisma.user.findFirst({ where: { role: "SYSTEM" } });
-    const operations = [
-      prisma.paymentTransaction.create({
-        data: {
-          transactionId,
-          invoiceId,
-          amountPaid,
-          paymentMethod: paymentType,
-          status: paymentStatus,
-        },
-      }),
-      prisma.invoice.update({
+
+    await prisma.$transaction(async (tx) => {
+      await tx.paymentTransaction.create({
+        data: { transactionId, invoiceId, amountPaid, paymentMethod: paymentType, status: paymentStatus },
+      });
+      await tx.invoice.update({
         where: { id: invoiceId },
         data: { status: invoiceStatus, paidAt },
-      }),
-    ];
-
-    if (systemUser) {
-      operations.push(
-        prisma.auditLog.create({
+      });
+      if (systemUser) {
+        await tx.auditLog.create({
           data: {
             action: "WEBHOOK_PAYMENT_RECEIVED",
             entity: "Invoice",
@@ -106,23 +93,18 @@ export async function POST(req: Request) {
             actorId: systemUser.id,
             actorRole: "SYSTEM",
           },
-        }) as never,
-      );
-    }
-
-    await prisma.$transaction(operations);
+        });
+      }
+    });
 
     if (invoiceStatus === "PAID") {
-      // Freeze semantics are not finalized by the company, so network restoration is opt-in.
+      // Freeze semantics are not finalized, so network restoration remains opt-in.
       if (process.env.ENABLE_AUTOMATIC_UNISOLATION === "true" && invoice.subscriber.status === "FREEZE") {
         const restored = invoice.subscriber.device?.macAddress
           ? await unIsolateClient(invoice.subscriber.device.macAddress)
           : false;
         if (restored) {
-          await prisma.subscriber.update({
-            where: { id: invoice.subscriber.id },
-            data: { status: "ACTIVE" },
-          });
+          await prisma.subscriber.update({ where: { id: invoice.subscriber.id }, data: { status: "ACTIVE" } });
         }
       }
 
