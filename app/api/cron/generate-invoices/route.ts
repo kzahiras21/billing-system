@@ -1,82 +1,34 @@
 import { NextResponse } from "next/server";
-import { PrismaClient } from "@prisma/client";
+import { prisma } from "@/lib/db";
+import { generateMonthlyInvoices } from "@/lib/invoice-generator";
 
-const prisma = new PrismaClient();
+function authorized(req: Request) {
+  const secret = process.env.CRON_SECRET;
+  if (!secret || secret.length < 24) return false;
+  return req.headers.get("authorization") === `Bearer ${secret}`;
+}
 
 export async function POST(req: Request) {
+  if (!authorized(req)) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
   try {
-    // In production, verify an API key here so random people can't trigger this cron
-    const authHeader = req.headers.get("authorization");
-    if (authHeader !== `Bearer ${process.env.CRON_SECRET || 'secret-cron-key'}`) {
-      // return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-      // For local testing, we'll bypass this check if missing
-    }
-
-    const activeSubscribers = await prisma.subscriber.findMany({
-      where: { status: "ACTIVE" },
-      include: { product: true },
-    });
-
-    let generatedCount = 0;
-
-    for (const sub of activeSubscribers) {
-      if (!sub.product) continue;
-
-      // Kalkulasi PPN 11% (Exclusive: ditambahkan ke harga dasar)
-      const basePrice = sub.product.basePrice;
-      const taxAmount = basePrice * 0.11;
-      const totalAmount = basePrice + taxAmount;
-
-      // Jatuh tempo default: tanggal 10 bulan ini
-      const dueDate = new Date();
-      dueDate.setDate(10); 
-      
-      // Prevent double generation for the current month
-      const startOfMonth = new Date(dueDate.getFullYear(), dueDate.getMonth(), 1);
-      const endOfMonth = new Date(dueDate.getFullYear(), dueDate.getMonth() + 1, 0);
-
-      const existingInvoice = await prisma.invoice.findFirst({
-        where: {
-          subscriberId: sub.id,
-          createdAt: {
-            gte: startOfMonth,
-            lte: endOfMonth
-          }
-        }
+    const result = await generateMonthlyInvoices();
+    const systemUser = await prisma.user.findFirst({ where: { role: "SYSTEM" } });
+    if (systemUser) {
+      await prisma.auditLog.create({
+        data: {
+          action: "CRON_GENERATE_INVOICE",
+          entity: "System",
+          entityId: "CronJob",
+          newValue: JSON.stringify(result),
+          actorId: systemUser.id,
+          actorRole: "SYSTEM",
+        },
       });
-
-      if (!existingInvoice) {
-        // Generate Invoice
-        // We simulate VA and QRIS generation for phase 2
-        await prisma.invoice.create({
-          data: {
-            subscriberId: sub.id,
-            amount: basePrice,
-            taxAmount: taxAmount,
-            totalAmount: totalAmount,
-            status: "UNPAID",
-            dueDate: dueDate,
-            virtualAccount: `8800${sub.phone.substring(0,8)}`, // Mock VA
-            qrisUrl: `https://mock-qris.com/pay/${sub.id}`
-          }
-        });
-        generatedCount++;
-      }
     }
-
-    // Audit Log for system action
-    await prisma.auditLog.create({
-      data: {
-        action: "CRON_GENERATE_INVOICE",
-        entity: "System",
-        entityId: "CronJob",
-        newValue: JSON.stringify({ count: generatedCount }),
-        actorId: "system", // Assuming a system user or we can leave it
-        actorRole: "SYSTEM"
-      }
-    }).catch(console.error); // Catch if 'system' actor doesn't exist, normally we'd seed a system user.
-
-    return NextResponse.json({ success: true, generated: generatedCount });
+    return NextResponse.json({ success: true, generated: result.generatedCount, ...result });
   } catch (error) {
     console.error("Cron Error:", error);
     return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });

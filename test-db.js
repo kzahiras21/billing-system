@@ -1,25 +1,15 @@
-// test-db.js
+// Development-only database connectivity check. Never print user records or password hashes.
 const { PrismaClient } = require('@prisma/client');
 const prisma = new PrismaClient();
 
 async function main() {
-    console.log("Mencoba koneksi ke database...");
-
-    // Query sederhana mengambil data admin
-    const users = await prisma.user.findMany();
-
-    if (users.length > 0) {
-        console.log("✅ BERHASIL! Database terhubung.");
-        console.log("Data User ditemukan:", users);
-    } else {
-        console.log("⚠️ Database terhubung, tapi tabel User masih kosong.");
-    }
+  const userCount = await prisma.user.count();
+  console.log(`Database connected. User rows: ${userCount}`);
 }
 
 main()
-    .catch((e) => {
-        console.error("❌ GAGAL terhubung ke database:", e);
-    })
-    .finally(async () => {
-        await prisma.$disconnect();
-    });
+  .catch((error) => {
+    console.error('Database connectivity check failed:', error instanceof Error ? error.message : 'unknown error');
+    process.exitCode = 1;
+  })
+  .finally(async () => prisma.$disconnect());
