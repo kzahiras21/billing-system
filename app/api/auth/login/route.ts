@@ -3,6 +3,7 @@ import bcrypt from "bcrypt";
 import speakeasy from "speakeasy";
 import { prisma } from "@/lib/db";
 import { clientIp, signSession } from "@/lib/auth";
+import { decryptSecret } from "@/lib/crypto";
 
 const MAX_FAILED_ATTEMPTS = 5;
 const LOCK_MINUTES = 15;
@@ -83,7 +84,7 @@ export async function POST(req: Request) {
         return NextResponse.json({ error: "2FA configuration is invalid. Contact IT." }, { status: 403 });
       }
       const valid = speakeasy.totp.verify({
-        secret: user.twoFactorSecret,
+        secret: decryptSecret(user.twoFactorSecret),
         encoding: "base32",
         token: twoFactorCode,
         window: 1,
