@@ -4,6 +4,22 @@ const crypto = require('crypto');
 
 const prisma = new PrismaClient();
 
+function encryptionKey() {
+  const encoded = process.env.FIELD_ENCRYPTION_KEY;
+  if (!encoded) throw new Error('FIELD_ENCRYPTION_KEY is required');
+  const key = Buffer.from(encoded, 'base64');
+  if (key.length !== 32) throw new Error('FIELD_ENCRYPTION_KEY must be 32 random bytes encoded as base64');
+  return key;
+}
+
+function encryptSecret(plaintext) {
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv('aes-256-gcm', encryptionKey(), iv);
+  const ciphertext = Buffer.concat([cipher.update(plaintext, 'utf8'), cipher.final()]);
+  const tag = cipher.getAuthTag();
+  return `v1:${iv.toString('base64')}:${tag.toString('base64')}:${ciphertext.toString('base64')}`;
+}
+
 async function main() {
   const adminEmail = process.env.BOOTSTRAP_ADMIN_EMAIL;
   const adminPassword = process.env.BOOTSTRAP_ADMIN_PASSWORD;
@@ -20,7 +36,7 @@ async function main() {
     where: { email: adminEmail.toLowerCase() },
     update: {
       passwordHash,
-      twoFactorSecret: adminTotpSecret,
+      twoFactorSecret: encryptSecret(adminTotpSecret),
       twoFactorEnabled: true,
       sessionVersion: { increment: 1 },
     },
@@ -29,7 +45,7 @@ async function main() {
       name: 'Super Admin',
       passwordHash,
       role: 'SUPER_ADMIN',
-      twoFactorSecret: adminTotpSecret,
+      twoFactorSecret: encryptSecret(adminTotpSecret),
       twoFactorEnabled: true,
     },
   });
