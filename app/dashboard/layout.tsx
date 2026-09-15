@@ -1,24 +1,20 @@
-import { cookies } from "next/headers";
-import { redirect } from "next/navigation";
 import styles from "./dashboard.module.css";
+import { requireUser } from "@/lib/auth";
 
 export default async function DashboardLayout({
   children,
 }: {
   children: React.ReactNode;
 }) {
-  const cookieStore = await cookies();
-  const token = cookieStore.get("auth_token");
-
-  // Basic middleware check (ideally done in middleware.ts)
-  if (!token) {
-    redirect("/");
-  }
+  const user = await requireUser();
 
   return (
     <div className={styles.layout}>
       <aside className={`glass-panel ${styles.sidebar}`}>
         <h2>ISP Billing</h2>
+        <p style={{ fontSize: "0.75rem", color: "var(--text-muted)", marginBottom: "1rem" }}>
+          {user.name} · {user.role}
+        </p>
         <nav>
           <a href="/dashboard" className={styles.navLink}>Dashboard</a>
           <a href="/dashboard/subscribers" className={styles.navLink}>Subscribers</a>
@@ -26,7 +22,9 @@ export default async function DashboardLayout({
           <a href="/dashboard/devices" className={styles.navLink}>Devices</a>
           <a href="/dashboard/invoices" className={styles.navLink}>Invoices</a>
           <a href="/dashboard/reports" className={styles.navLink}>Reports</a>
-          <a href="/dashboard/audit-logs" className={styles.navLink}>Audit Logs</a>
+          {(user.role === "SUPER_ADMIN" || user.role === "BOD") && (
+            <a href="/dashboard/audit-logs" className={styles.navLink}>Audit Logs</a>
+          )}
         </nav>
       </aside>
       <main className={styles.mainContent}>
