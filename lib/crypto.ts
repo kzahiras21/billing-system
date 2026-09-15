@@ -1,5 +1,3 @@
-import "server-only";
-
 import { createCipheriv, createDecipheriv, randomBytes } from "crypto";
 
 function encryptionKey() {
