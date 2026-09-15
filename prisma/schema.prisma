@@ -8,22 +8,42 @@ datasource db {
 }
 
 model User {
-  id               String     @id @default(uuid())
-  email            String     @unique
-  name             String
-  passwordHash     String
-  role             String     // SUPER_ADMIN, BOD, FINANCE, MARKETING, SYSTEM
-  twoFactorSecret  String?
-  twoFactorEnabled Boolean    @default(false)
-  createdAt        DateTime   @default(now())
-  updatedAt        DateTime   @updatedAt
-  auditLogs        AuditLog[]
+  id                  String     @id @default(uuid())
+  email               String     @unique
+  name                String
+  passwordHash        String
+  role                String     // SUPER_ADMIN, BOD, FINANCE, MARKETING, SYSTEM
+  twoFactorSecret     String?
+  twoFactorEnabled    Boolean    @default(false)
+  failedLoginAttempts Int        @default(0)
+  lockedUntil         DateTime?
+  lastLoginAt         DateTime?
+  sessionVersion      Int        @default(1)
+  createdAt           DateTime   @default(now())
+  updatedAt           DateTime   @updatedAt
+  auditLogs           AuditLog[]
+}
+
+model Customer {
+  id          String       @id @default(uuid())
+  name        String
+  phone       String
+  whatsapp    String
+  email       String
+  taxId       String?
+  marketingId String?
+  subscribers Subscriber[]
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+
+  @@index([name])
+  @@index([email])
 }
 
 model Product {
   id          String       @id @default(uuid())
   name        String
-  basePrice   Float
+  basePrice   Int          // Store whole Rupiah; avoid floating-point money errors
   status      String       @default("ACTIVE") // ACTIVE, INACTIVE
   createdAt   DateTime     @default(now())
   updatedAt   DateTime     @updatedAt
@@ -40,23 +60,36 @@ model Device {
   subscriber   Subscriber?
 }
 
+// Subscriber represents one service/site. Multiple Subscriber rows can belong to one Customer.
 model Subscriber {
-  id          String   @id @default(uuid())
-  name        String
-  phone       String
-  whatsapp    String
-  email       String
-  address     String
-  floor       String?
-  status      String   @default("ACTIVE") // ACTIVE, FREEZE, DISMANTLE
-  productId   String
-  product     Product  @relation(fields: [productId], references: [id])
-  deviceId    String?  @unique
-  device      Device?  @relation(fields: [deviceId], references: [id])
-  marketingId String?
-  invoices    Invoice[]
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  id                 String    @id @default(uuid())
+  customerId         String?
+  customer           Customer? @relation(fields: [customerId], references: [id])
+  name               String
+  siteName           String?
+  phone              String
+  whatsapp           String
+  email              String
+  address            String
+  floor              String?
+  status             String    @default("PENDING_INSTALLATION") // PENDING_INSTALLATION, TRIAL, ACTIVE, FREEZE, DISMANTLE
+  activationDate     DateTime?
+  trialEndsAt        DateTime?
+  contractStartsAt   DateTime?
+  contractEndsAt     DateTime?
+  agreedMonthlyPrice Int?      // Snapshot contract price so existing customers keep their agreed price
+  registrationFee    Int       @default(0)
+  productId          String
+  product            Product   @relation(fields: [productId], references: [id])
+  deviceId           String?   @unique
+  device             Device?   @relation(fields: [deviceId], references: [id])
+  marketingId        String?
+  invoices           Invoice[]
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  @@index([customerId])
+  @@index([status])
 }
 
 model AuditLog {
@@ -69,24 +102,46 @@ model AuditLog {
   actorId   String
   actorRole String
   ipAddress String?
+  userAgent String?
   timestamp DateTime @default(now())
   actor     User     @relation(fields: [actorId], references: [id])
+
+  @@index([timestamp])
+  @@index([entity, entityId])
 }
 
 model Invoice {
-  id              String   @id @default(uuid())
+  id              String               @id @default(uuid())
   subscriberId    String
-  subscriber      Subscriber @relation(fields: [subscriberId], references: [id])
-  amount          Float
-  taxAmount       Float    // PPN 11%
-  totalAmount     Float
-  status          String   @default("UNPAID") // UNPAID, PAID, CANCELLED, OVERDUE
+  subscriber      Subscriber           @relation(fields: [subscriberId], references: [id])
+  billingYear     Int
+  billingMonth    Int
+  amount          Int                  // Whole Rupiah
+  taxRateBps      Int                  @default(1100) // 11.00% = 1100 basis points
+  taxAmount       Int
+  totalAmount     Int
+  status          String               @default("UNPAID") // UNPAID, PAID, CANCELLED, OVERDUE, NEED_REVIEW
   dueDate         DateTime
+  paidAt          DateTime?
   virtualAccount  String?
   qrisUrl         String?
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
+  createdAt       DateTime             @default(now())
+  updatedAt       DateTime             @updatedAt
   payments        PaymentTransaction[]
+  items           InvoiceItem[]
+
+  @@unique([subscriberId, billingYear, billingMonth])
+  @@index([status, dueDate])
+}
+
+model InvoiceItem {
+  id          String  @id @default(uuid())
+  invoiceId   String
+  invoice     Invoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  description String
+  quantity    Int     @default(1)
+  unitAmount  Int
+  lineAmount  Int
 }
 
 model PaymentTransaction {
@@ -94,8 +149,10 @@ model PaymentTransaction {
   transactionId String   @unique // From Payment Gateway to prevent double processing
   invoiceId     String
   invoice       Invoice  @relation(fields: [invoiceId], references: [id])
-  amountPaid    Float
+  amountPaid    Int      // Whole Rupiah
   paymentMethod String   // VA, QRIS
   status        String   @default("SETTLEMENT") // SETTLEMENT, PENDING, DENY
   timestamp     DateTime @default(now())
+
+  @@index([invoiceId, status])
 }
